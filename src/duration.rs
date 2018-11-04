@@ -61,6 +61,17 @@ quick_error! {
 #[derive(Debug)]
 pub struct FormattedDuration(Duration);
 
+#[derive(Debug)]
+pub enum RoundingMode {
+    FLOOR,
+    CEIL,
+    ROUND
+}
+
+/// A wrapper type that allows you to Display a Duration approximately
+#[derive(Debug)]
+pub struct ApproximateDuration(Duration, RoundingMode, u8);
+
 trait OverflowOp: Sized {
     fn mul(self, other: Self) -> Result<Self, Error>;
     fn add(self, other: Self) -> Result<Self, Error>;
@@ -231,69 +242,104 @@ pub fn format_duration(val: Duration) -> FormattedDuration {
     FormattedDuration(val)
 }
 
-fn item_plural(f: &mut fmt::Formatter, started: &mut bool,
-    name: &str, value: u64)
+pub fn format_duration_approx(val: Duration, mode: RoundingMode, max_elements: u8) -> ApproximateDuration {
+    ApproximateDuration(val, mode, max_elements)
+}
+
+fn item(
+    f: &mut fmt::Formatter,
+    mode: &RoundingMode,
+    started: &mut i16,
+    name: &str,
+    plural_suffix: Option<&str>,
+    remaining_value: &mut u64,
+    unit: u64
+)
     -> fmt::Result
 {
-    if value > 0 {
-        if *started {
+    let mut value = extract_unit(remaining_value, unit);
+    if value > 0 && *started != 0 {
+        if *started > 0 {
             f.write_str(" ")?;
+        } else {
+            *started = -*started;
         }
+        *started -= 1;
+        if *started == 0 {
+            value += match mode {
+                RoundingMode::FLOOR => 0,
+                RoundingMode::CEIL => if *remaining_value > 0 {1} else {0},
+                RoundingMode::ROUND => if *remaining_value >= unit/2 {1} else {0}
+            }
+        }
+
         write!(f, "{}{}", value, name)?;
-        if value > 1 {
-            f.write_str("s")?;
+        if value > 1 && plural_suffix != None {
+             f.write_str(plural_suffix.unwrap())?;
         }
-        *started = true;
     }
     Ok(())
 }
-fn item(f: &mut fmt::Formatter, started: &mut bool, name: &str, value: u32)
-    -> fmt::Result
-{
-    if value > 0 {
-        if *started {
-            f.write_str(" ")?;
-        }
-        write!(f, "{}{}", value, name)?;
-        *started = true;
+
+fn extract_unit(remaining_value: &mut u64, unit: u64) -> u64 {
+    if unit == 0 {
+        let val = *remaining_value;
+        *remaining_value = 0;
+        return val;
     }
-    Ok(())
+    let value = *remaining_value / unit;
+    *remaining_value = *remaining_value % unit;
+    return value;
 }
 
 impl fmt::Display for FormattedDuration {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let secs = self.0.as_secs();
-        let nanos = self.0.subsec_nanos();
+        let ref mut remaining_secs = self.0.as_secs();
+        let ref mut remaining_nanos = self.0.subsec_nanos() as u64;
 
-        if secs == 0 && nanos == 0 {
+        if *remaining_secs == 0 && *remaining_nanos == 0 {
             f.write_str("0s")?;
             return Ok(());
         }
 
-        let years = secs / 31557600;  // 365.25d
-        let ydays = secs % 31557600;
-        let months = ydays / 2630016;  // 30.44d
-        let mdays = ydays % 2630016;
-        let days = mdays / 86400;
-        let day_secs = mdays % 86400;
-        let hours = day_secs / 3600;
-        let minutes = day_secs % 3600 / 60;
-        let seconds = day_secs % 60;
+        let ref mut started = -100;
+        item(f, &RoundingMode::FLOOR, started, "year", Some("s"), remaining_secs, 31557600)?; // 365.25d
+        item(f, &RoundingMode::FLOOR, started, "month", Some("s"), remaining_secs, 2630016)?; // 30.44d
+        item(f, &RoundingMode::FLOOR, started, "day", Some("s"), remaining_secs, 86400)?;
+        item(f, &RoundingMode::FLOOR, started, "h", None, remaining_secs, 3600)?;
+        item(f, &RoundingMode::FLOOR, started, "m", None, remaining_secs, 60)?;
+        item(f, &RoundingMode::FLOOR, started, "s", None, remaining_secs, 0)?;
 
-        let millis = nanos / 1_000_000;
-        let micros = nanos / 1000 % 1000;
-        let nanosec = nanos % 1000;
+        item(f, &RoundingMode::FLOOR, started, "ms", None, remaining_nanos, 1_000_000)?;
+        item(f, &RoundingMode::FLOOR, started, "us", None, remaining_nanos, 1000)?;
+        item(f, &RoundingMode::FLOOR, started, "ns", None, remaining_nanos, 0)?;
+        Ok(())
+    }
+}
 
-        let ref mut started = false;
-        item_plural(f, started, "year", years)?;
-        item_plural(f, started, "month", months)?;
-        item_plural(f, started, "day", days)?;
-        item(f, started, "h", hours as u32)?;
-        item(f, started, "m", minutes as u32)?;
-        item(f, started, "s", seconds as u32)?;
-        item(f, started, "ms", millis)?;
-        item(f, started, "us", micros)?;
-        item(f, started, "ns", nanosec)?;
+impl fmt::Display for ApproximateDuration {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let ref mut remaining_secs = self.0.as_secs();
+        let ref mut remaining_nanos = self.0.subsec_nanos() as u64;
+
+        if *remaining_secs == 0 && *remaining_nanos == 0 {
+            f.write_str("0s")?;
+            return Ok(());
+        }
+
+        let ref mut started = -(self.2 as i16);
+        item(f, &self.1, started, "year", Some("s"), remaining_secs, 31557600)?; // 365.25d
+        item(f, &self.1, started, "month", Some("s"), remaining_secs, 2630016)?; // 30.44d
+        item(f, &self.1, started, "day", Some("s"), remaining_secs, 86400)?;
+        item(f, &self.1, started, "h", None, remaining_secs, 3600)?;
+        item(f, &self.1, started, "m", None, remaining_secs, 60)?;
+
+        *remaining_nanos += *remaining_secs*1_000_000_000;
+
+        item(f, &self.1, started, "s", None, remaining_nanos, 1_000_000_000)?;
+        item(f, &self.1, started, "ms", None, remaining_nanos, 1_000_000)?;
+        item(f, &self.1, started, "us", None, remaining_nanos, 1000)?;
+        item(f, &self.1, started, "ns", None, remaining_nanos, 0)?;
         Ok(())
     }
 }
@@ -304,7 +350,7 @@ mod test {
 
     use std::time::Duration;
     use self::rand::Rng;
-    use super::{parse_duration, format_duration};
+    use super::{parse_duration, format_duration, format_duration_approx, RoundingMode};
     use super::Error;
 
     #[test]
@@ -407,5 +453,32 @@ mod test {
             Err(Error::NumberOverflow));
         assert_eq!(parse_duration("10000000000000y"),
             Err(Error::NumberOverflow));
+    }
+
+    #[test]
+    fn year_12month() {
+        let d = Duration::new(31557600 + 31557600-86400*12, 0);
+        let formatted = &format_duration_approx(d, RoundingMode::ROUND, 2).to_string();
+        assert_eq!(
+            Duration::new(31557600 + 31560192, 0),
+            parse_duration(formatted).unwrap()
+        );
+
+        let d = Duration::new(31557600 + 31560192-2*2630016+123, 0);
+
+        let formatted = &format_duration_approx(d, RoundingMode::CEIL, 2).to_string();
+        assert_eq!(
+            Duration::new(31557600 + 31560192-2630016, 0),
+            parse_duration(formatted).unwrap()
+        );
+
+
+        let d = Duration::new(31557600 + 31560192-2630016-1, 0);
+
+        let formatted = &format_duration_approx(d, RoundingMode::FLOOR, 2).to_string();
+        assert_eq!(
+            Duration::new(31557600 + 31560192-2*2630016, 0),
+            parse_duration(formatted).unwrap()
+        );
     }
 }

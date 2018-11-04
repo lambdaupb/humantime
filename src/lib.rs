@@ -24,6 +24,7 @@ mod date;
 
 pub use duration::{parse_duration, Error as DurationError};
 pub use duration::{format_duration, FormattedDuration};
+pub use duration::{format_duration_approx, ApproximateDuration, RoundingMode};
 pub use wrapper::{Duration, Timestamp};
 pub use date::{parse_rfc3339, parse_rfc3339_weak, Error as TimestampError};
 pub use date::{format_rfc3339, format_rfc3339_seconds, format_rfc3339_nanos};
